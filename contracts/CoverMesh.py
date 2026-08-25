@@ -441,8 +441,8 @@ class CoverMesh(gl.Contract):
             subject=subject, keywords=keywords,
             location_lat=location_lat, location_lon=location_lon, threshold_metric=threshold_metric,
             threshold_comparator=threshold_comparator, threshold_value=threshold_value,
-            asset_id=asset_id, allowed_outcomes=self._make_dynarray_str(allowed_outcomes),
-            triggering_outcomes=self._make_dynarray_str(triggering_outcomes),
+            asset_id=asset_id, allowed_outcomes=allowed_outcomes,
+            triggering_outcomes=triggering_outcomes,
             window_start=window_start, window_end=window_end,
             coverage_amount=coverage_amount, premium_paid=premium, created_at=now,
             resolved=False, resolution_status="", extracted_reading="", payout_amount=u256(0),
@@ -925,15 +925,6 @@ the resulting classification must agree.
             return str(gl.nondet.web.render(query, mode="text"))[:cap]
         except Exception:
             return "[FETCH_UNAVAILABLE]"
-
-    def _make_dynarray_str(self, items) -> "DynArray[str]":
-        """Storage generics like DynArray don't have Python's type erasure (fixed memory
-        layout), so a Cover's DynArray[str] fields can't just be assigned a plain python list --
-        they need to be allocated in-memory first, then populated by appending each element."""
-        arr = gl.storage.inmem_allocate(DynArray[str])
-        for item in items:
-            arr.append(item)
-        return arr
 
     def _require_peril(self, peril_type_id: str) -> PerilType:
         if peril_type_id not in self.peril_types:
