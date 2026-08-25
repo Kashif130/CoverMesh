@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  border-color: theme("colors.line");
+}
+
+body {
+  background-image: theme("backgroundImage.grain");
+  background-size: 22px 22px;
+}
+
+::selection {
+  background: theme("colors.signal");
+  color: theme("colors.ink");
+}
+
+.focus-ring {
+  outline: none;
+}
+.focus-ring:focus-visible {
+  outline: 2px solid theme("colors.signal");
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+.input {
+  @apply rounded-lg border border-line bg-ink px-3 py-2 text-sm text-paper placeholder:text-muted/60 focus-ring focus:border-signal;
+}
+
+.btn-primary {
+  @apply focus-ring rounded-full bg-signal px-5 py-2 font-mono text-xs font-medium text-ink transition hover:bg-signal/90 disabled:opacity-50 disabled:hover:bg-signal;
+}
+
+.btn-secondary {
+  @apply focus-ring rounded-full border border-line px-5 py-2 font-mono text-xs text-paper transition hover:border-signal disabled:opacity-50;
+}
+
+.stub-edge {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    theme("colors.line") 0,
+    theme("colors.line") 6px,
+    transparent 6px,
+    transparent 14px
+  );
+  background-size: 1px 100%;
+  background-repeat: no-repeat;
+}
