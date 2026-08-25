@@ -22,7 +22,7 @@ afterward.
 - **Live app**: a Next.js dashboard is included in this repo under [`frontend/`](./frontend) --
   see [`frontend/README.md`](./frontend/README.md) for local dev and deployment instructions.
 - **Source**: add GitHub repo URL here when published
-- **Contract**: `0x0d8D6F00cF5F282a8aA00de6697071b3f2b14c20` (StudioNet)
+- **Contract**: `0x3b279743B132B4f2f115EB13f39519C907E55397` (StudioNet)
 - **Main workflow**: provide liquidity -> open a forward-looking cover against an active peril
   type (paying a computed premium, which raises pool NAV) -> once the window ends, anyone
   triggers `check_claim` -> a peril-appropriate consensus round settles the claim directly
