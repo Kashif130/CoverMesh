@@ -306,10 +306,14 @@ def test_execute_withdrawal_rejects_full_exit_that_would_breach_reserved_liabili
     # reserves liability against the pool. Withdrawing the entire original deposit would draw
     # pool_nav below reserved_liability, so execution must be rejected until the cover resolves
     # or enough of the reservation is otherwise released.
-    fund_pool(contract, direct_vm, direct_bob, 10 * GEN)
+    # Pool is funded at 30 GEN (not just 5/10 GEN) so the 5 GEN cover opened below still clears
+    # WEATHER's own 20%-of-NAV per-cover concentration cap (2000 bps) -- 5 GEN is exactly 20% of
+    # a 25+ GEN pool, keeping this test focused on the reserved-liability/withdrawal check rather
+    # than tripping the unrelated concentration-cap check first.
+    fund_pool(contract, direct_vm, direct_bob, 30 * GEN)
     warp_to(direct_vm, NOW)
     direct_vm.sender = direct_bob
-    contract.request_withdrawal(10 * GEN)
+    contract.request_withdrawal(30 * GEN)
     open_weather_cover(contract, direct_vm, direct_bob, coverage_amount=5 * GEN)
     warp_to(direct_vm, AFTER_LOCKUP)
     direct_vm.sender = direct_bob
