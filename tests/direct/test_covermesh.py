@@ -285,6 +285,41 @@ def test_execute_withdrawal_rejects_a_second_execution(contract, direct_vm, dire
         contract.execute_withdrawal()
 
 
+def test_execute_withdrawal_full_lp_exit_zeroes_pool_when_no_covers_open(contract, direct_vm, direct_bob):
+    # Sole LP requests and executes a full exit with no open covers -- reserved_liability is 0,
+    # so the whole pool_nav is free, and the pool should end up completely empty.
+    fund_pool(contract, direct_vm, direct_bob, 10 * GEN)
+    warp_to(direct_vm, NOW)
+    direct_vm.sender = direct_bob
+    contract.request_withdrawal(10 * GEN)
+    warp_to(direct_vm, AFTER_LOCKUP)
+    direct_vm.sender = direct_bob
+    payout = contract.execute_withdrawal()
+    assert payout == 10 * GEN
+    summary = contract.get_pool_summary()
+    assert summary["pool_nav"] == "0"
+    assert summary["total_shares"] == "0"
+
+
+def test_execute_withdrawal_rejects_full_exit_that_would_breach_reserved_liability(contract, direct_vm, direct_bob):
+    # The sole LP requests a full exit, but a cover opened afterward (funded by its own premium)
+    # reserves liability against the pool. Withdrawing the entire original deposit would draw
+    # pool_nav below reserved_liability, so execution must be rejected until the cover resolves
+    # or enough of the reservation is otherwise released.
+    fund_pool(contract, direct_vm, direct_bob, 10 * GEN)
+    warp_to(direct_vm, NOW)
+    direct_vm.sender = direct_bob
+    contract.request_withdrawal(10 * GEN)
+    open_weather_cover(contract, direct_vm, direct_bob, coverage_amount=5 * GEN)
+    warp_to(direct_vm, AFTER_LOCKUP)
+    direct_vm.sender = direct_bob
+    with pytest.raises(Exception):
+        contract.execute_withdrawal()
+    # The liability is still fully backed -- nothing was silently paid out short.
+    summary = contract.get_pool_summary()
+    assert int(summary["pool_nav"]) >= int(summary["reserved_liability"])
+
+
 # --- open_cover: shared + WEATHER-specific validation ---
 
 
@@ -387,6 +422,31 @@ def test_open_cover_rejects_infinity_as_threshold_value(contract, direct_vm, dir
         open_weather_cover(contract, direct_vm, direct_bob, threshold_value="inf")
 
 
+def test_open_cover_rejects_zero_threshold_for_precipitation(contract, direct_vm, direct_bob):
+    # precipitation_mm can never be negative, so ">= 0" would be trivially guaranteed regardless
+    # of actual evidence.
+    fund_pool(contract, direct_vm, direct_bob, 100 * GEN)
+    warp_to(direct_vm, NOW)
+    with pytest.raises(Exception):
+        open_weather_cover(contract, direct_vm, direct_bob, threshold_metric="precipitation_mm", threshold_value="0.0")
+
+
+def test_open_cover_rejects_zero_threshold_for_wind_speed(contract, direct_vm, direct_bob):
+    fund_pool(contract, direct_vm, direct_bob, 100 * GEN)
+    warp_to(direct_vm, NOW)
+    with pytest.raises(Exception):
+        open_weather_cover(contract, direct_vm, direct_bob, threshold_metric="wind_speed_max_kmh", threshold_value="0.0")
+
+
+def test_open_cover_allows_zero_threshold_for_temperature(contract, direct_vm, direct_bob):
+    # Temperature genuinely can be negative, so a 0.0 threshold (freezing point) is a real,
+    # non-trivial condition and must remain allowed.
+    fund_pool(contract, direct_vm, direct_bob, 100 * GEN)
+    warp_to(direct_vm, NOW)
+    cid = open_weather_cover(contract, direct_vm, direct_bob, threshold_metric="temperature_min_c", threshold_value="0.0")
+    assert contract.get_cover(cid)["threshold_value"] == "0.0"
+
+
 def test_open_cover_rejects_wrong_premium_value(contract, direct_vm, direct_bob):
     fund_pool(contract, direct_vm, direct_bob, 100 * GEN)
     warp_to(direct_vm, NOW)
@@ -481,6 +541,22 @@ def test_open_cover_price_success_with_lte_comparator(contract, direct_vm, direc
     assert cover["asset_id"] == "bitcoin"
 
 
+def test_open_cover_price_rejects_zero_threshold_with_gte_comparator(contract, direct_vm, direct_bob):
+    # An asset price is always positive, so ">= 0" would be trivially guaranteed.
+    fund_pool(contract, direct_vm, direct_bob, 100 * GEN)
+    warp_to(direct_vm, NOW)
+    with pytest.raises(Exception):
+        open_price_cover(contract, direct_vm, direct_bob, comparator=">=", threshold_value="0.0")
+
+
+def test_open_cover_price_rejects_zero_threshold_with_lte_comparator(contract, direct_vm, direct_bob):
+    # Symmetrically, "<= 0" would be trivially impossible for a price that is always positive.
+    fund_pool(contract, direct_vm, direct_bob, 100 * GEN)
+    warp_to(direct_vm, NOW)
+    with pytest.raises(Exception):
+        open_price_cover(contract, direct_vm, direct_bob, comparator="<=", threshold_value="0.0")
+
+
 # --- open_cover: NEWS_EVENT-specific validation ---
 
 
@@ -538,6 +614,41 @@ def test_open_cover_news_success(contract, direct_vm, direct_bob):
     cover = contract.get_cover(cid)
     assert cover["allowed_outcomes"] == ["LAUNCH_DELAYED", "LAUNCH_ON_TIME"]
     assert cover["triggering_outcomes"] == ["LAUNCH_DELAYED"]
+
+
+def test_open_cover_news_persists_normalized_outcome_labels(contract, direct_vm, direct_bob):
+    # Buyer input with stray casing/whitespace must be persisted in its cleaned form (stripped,
+    # uppercased) -- not the raw input -- since that cleaned form is what check_claim later
+    # compares the consensus outcome against.
+    fund_pool(contract, direct_vm, direct_bob, 100 * GEN)
+    warp_to(direct_vm, NOW)
+    cid = open_news_cover(
+        contract, direct_vm, direct_bob,
+        allowed_outcomes=[" launch_delayed ", "Launch_On_Time"],
+        triggering_outcomes=["launch_delayed"],
+    )
+    cover = contract.get_cover(cid)
+    assert cover["allowed_outcomes"] == ["LAUNCH_DELAYED", "LAUNCH_ON_TIME"]
+    assert cover["triggering_outcomes"] == ["LAUNCH_DELAYED"]
+
+
+def test_check_claim_news_triggers_when_stored_labels_were_normalized_from_sloppy_input(
+    contract, direct_vm, direct_bob
+):
+    # End-to-end: a cover opened with messy-cased/whitespace-padded labels must still correctly
+    # match the (uppercased) outcome the consensus round returns.
+    fund_pool(contract, direct_vm, direct_bob, 100 * GEN)
+    warp_to(direct_vm, NOW)
+    cid = open_news_cover(
+        contract, direct_vm, direct_bob, coverage_amount=2 * GEN,
+        allowed_outcomes=[" launch_delayed ", "Launch_On_Time"],
+        triggering_outcomes=["launch_delayed"],
+    )
+    warp_to(direct_vm, AFTER_WINDOW_END)
+    mock_news_event(direct_vm, outcome="LAUNCH_DELAYED")
+    direct_vm.sender = direct_bob
+    contract.check_claim(cid)
+    assert contract.get_cover(cid)["resolution_status"] == "TRIGGERED"
 
 
 # --- check_claim: timing gates ---
@@ -796,6 +907,34 @@ def test_check_claim_pays_keeper_reward_from_pool_nav(contract, direct_vm, direc
     contract.check_claim(cid)
     nav_after = int(contract.get_pool_summary()["pool_nav"])
     assert nav_before - nav_after == 1 * 10**15  # exactly KEEPER_REWARD_WEI, no payout occurred
+
+
+def test_check_claim_unresolved_retry_sequence_never_breaches_reserved_liability(
+    contract, direct_vm, direct_bob, direct_charlie
+):
+    # A cover that keeps coming back INSUFFICIENT_EVIDENCE across several permissionless retries
+    # must never have its own reserved liability released early, and each retry's keeper reward
+    # must never draw pool_nav below whatever is still reserved for this (and any other) live
+    # cover -- repeated rechecks are a real, unbounded-count pool outflow, not a one-shot cost.
+    fund_pool(contract, direct_vm, direct_bob, 100 * GEN)
+    warp_to(direct_vm, NOW)
+    cid = open_weather_cover(contract, direct_vm, direct_bob, coverage_amount=5 * GEN)
+    warp_to(direct_vm, AFTER_WINDOW_END)
+
+    check_times = [AFTER_WINDOW_END, "2099-01-20T01:01:00Z", "2099-01-20T01:31:00Z"]
+    for t in check_times:
+        warp_to(direct_vm, t)
+        mock_weather(direct_vm, status="UNAVAILABLE")
+        direct_vm.sender = direct_charlie
+        contract.check_claim(cid)
+        cover = contract.get_cover(cid)
+        assert cover["resolved"] is False
+        assert cover["resolution_status"] == "INSUFFICIENT_EVIDENCE"
+        summary = contract.get_pool_summary()
+        assert summary["reserved_liability"] == str(5 * GEN)  # unchanged across every retry
+        assert int(summary["pool_nav"]) >= int(summary["reserved_liability"])  # never breached
+
+    assert contract.get_cover(cid)["check_attempts"] == len(check_times)
 
 
 # --- expire_unclaimed_cover ---
