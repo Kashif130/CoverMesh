@@ -19,10 +19,9 @@ that peril's adapter and settles the outcome directly against the pool's own NAV
 payouts are the protocol's concrete settlement mechanism from the start, not a layer added
 afterward.
 
-- **Live app**: a Next.js dashboard is included in this repo under [`frontend/`](./frontend) --
-  see [`frontend/README.md`](./frontend/README.md) for local dev and deployment instructions.
-- **Source**: add GitHub repo URL here when published
-- **Contract**: `0x3b279743B132B4f2f115EB13f39519C907E55397` (StudioNet)
+- **Live app**: https://cover-mesh.vercel.app
+- **Source**: https://github.com/Kashif130/CoverMesh
+- **Contract**: 0xD51FC228fefd483e68aF65A4E4b7e3e566844883
 - **Main workflow**: provide liquidity -> open a forward-looking cover against an active peril
   type (paying a computed premium, which raises pool NAV) -> once the window ends, anyone
   triggers `check_claim` -> a peril-appropriate consensus round settles the claim directly
@@ -72,7 +71,9 @@ reading from evidence text and nothing else. The actual `>=`/`<=` comparison aga
 own stored threshold happens afterward, in this contract's own deterministic Python code -- not
 inside the consensus round, not as the model's own comparative judgment. This is a stricter
 trust boundary than any predecessor: even less of the paying decision is delegated to the
-model's own say-so. (NEWS_EVENT still needs a genuine categorical judgment call, since
+model's own say-so. That comparison is itself done in exact fixed-point decimal units, not raw
+float (see "Fixes from the second steward review round" below), so it cannot be swayed by
+binary-float representation noise either. (NEWS_EVENT still needs a genuine categorical judgment call, since
 classifying an event against a caller-defined taxonomy is not a numeric-extraction task -- that
 adapter keeps the categorical-classification approach proven elsewhere in this ecosystem.)
 
@@ -95,6 +96,32 @@ patches applied afterward:
    are the pool's own NAV accounting from `provide_liquidity`'s first line onward -- there is no
    separate staking or reward system sitting alongside an otherwise-inert oracle result.
 
+## Fixes from the second steward review round
+
+A second review round identified four gaps, all closed in the current version:
+
+1. **The numeric threshold comparison was raw float, not exact.** The consensus principle for
+   WEATHER/PRICE_THRESHOLD lets validators agree on a reading despite "ordinary floating-point
+   precision differences." But `check_claim` then compared that reading against the cover's
+   stored threshold using plain float `>=`/`<=`, so two readings validators treated as equivalent
+   could still land on opposite sides of the payout boundary. Both the reading and the threshold
+   are now normalized to the same fixed number of decimal places (`NUMERIC_COMPARISON_DECIMALS`)
+   using base-10 `Decimal` rounding (`_to_fixed_units`) and compared as exact integers -- the
+   decisive comparison can no longer be sensitive to binary-float representation noise.
+2. **Withdrawals could drain capital reserved for open covers.** `execute_withdrawal` priced
+   shares against total `pool_nav` with no regard for `reserved_liability`. It now refuses to
+   release a withdrawal that would drop `pool_nav` below `reserved_liability`; the request stays
+   queued and can be retried once outstanding covers resolve.
+3. **Keeper rewards had the same gap.** The reward payout in `check_claim` only checked that
+   `pool_nav` covered the reward itself. It now also requires the remaining `pool_nav` to stay at
+   or above `reserved_liability` after paying the reward.
+4. **NEWS_EVENT outcome labels were stored un-normalized.** `_validate_adapter_fields` computed
+   cleaned (stripped, upper-cased) `allowed_outcomes`/`triggering_outcomes` for validation, but
+   `open_cover` stored the caller's raw strings instead. Since `_consensus_categorical` classifies
+   against the normalized form, a stored `"Yes"` could silently fail to match a classified `"YES"`
+   at settlement, voiding a claim that should have paid. `_validate_adapter_fields` now returns
+   the normalized lists, and `open_cover` stores those.
+
 ## Architecture
 
 - `contracts/CoverMesh.py` -- a single Intelligent Contract holding three internally-separated
@@ -106,16 +133,14 @@ patches applied afterward:
   `_consensus_categorical`) depending on the cover's peril adapter, each exactly four
   non-deterministic operations (two or three `gl.nondet.web.render` fetches plus one
   `gl.nondet.exec_prompt`), run at most once per attempt with a cooldown between retries.
-- `tests/direct/` -- 71 direct-VM pytest tests (`gltest`) covering the registry, LP share
+- `tests/direct/` -- 77 direct-VM pytest tests (`gltest`) covering the registry, LP share
   economics and withdrawal lock-up, every adapter's field-isolation and validation rules, both
   solvency caps (isolated from each other with a dedicated multi-cover test), all three claim
   adapters' trigger/non-trigger/insufficient paths, the minimum-source enforcement, the
-  defensive downgrade of out-of-taxonomy model output, the keeper reward, cover expiry, and
-  every view method.
-- `frontend/` -- a Next.js dashboard talking to the deployed contract via `genlayer-js` and an
-  injected browser wallet: pool solvency at a glance, the peril-type registry, opening a cover in
-  any of the three adapters, and a covers ledger with claim-check / expire actions. See
-  [`frontend/README.md`](./frontend/README.md) for the full breakdown of what's wired up.
+  defensive downgrade of out-of-taxonomy model output, the keeper reward, cover expiry, every
+  view method, and the four fixes from the second steward review round (fixed-point threshold
+  normalization, reserved-liability-preserving withdrawals and keeper rewards, and normalized
+  NEWS_EVENT outcome-label storage).
 
 ### Contract methods
 
@@ -148,19 +173,21 @@ patches applied afterward:
   active balance immediately, but the shares keep bearing the pool's real P&L for a full 7 days
   before they can actually be redeemed -- the same family of cooldown mechanic used by real
   underwriting-pool protocols, specifically to prevent an LP who learns a claim is imminent from
-  exiting ahead of paying it.
+  exiting ahead of paying it. Execution itself is also blocked if it would drop `pool_nav` below
+  `reserved_liability` -- LPs can never withdraw capital the pool may still owe a beneficiary.
 - **Keeper reward**: a small, fixed amount is deducted from `pool_nav` on every `check_claim`
   call, paid to whoever triggered it -- a real, small operating cost the pool bears (the same
-  role a real insurer's claims-processing overhead plays), not a separate fee reserve.
+  role a real insurer's claims-processing overhead plays), not a separate fee reserve. Paid only
+  when doing so would not drop `pool_nav` below `reserved_liability`, for the same reason.
 
 ## Scope of this submission
 
-This submission is **Contract + Tests + Frontend**. The contract's own correctness, solvency
-invariants, and the steward-feedback lessons applied from the ground up were the priority for
-this revision, and the [`frontend/`](./frontend) Next.js dashboard now demonstrates the full flow
-end to end on top of it: provide liquidity, browse peril types, open a cover in any of the three
-adapters, trigger a claim check, and request/execute a withdrawal. See
-[`frontend/README.md`](./frontend/README.md) for what's wired up, local dev, and deployment.
+This submission is **Contract + Tests**, matching the depth of the protocol itself. A frontend
+demonstrating the full flow (provide liquidity, browse peril types, open a cover in any of the
+three adapters, trigger a claim check, request/execute a withdrawal) is a natural next step but
+is not included here -- the priority for this revision was the protocol's own correctness,
+solvency invariants, and the steward-feedback lessons applied from the ground up, rather than a
+UI layer on top of an under-tested contract.
 
 ## Honest limitations
 
@@ -186,6 +213,5 @@ adapters, trigger a claim check, and request/execute a withdrawal. See
   deliberately to avoid shipping unverified cross-contract-call semantics in an environment this
   submission could not execute-test against a live network.
 - **Wallet-extension write path is architecturally identical to a proven pattern elsewhere in
-  this ecosystem, but has not been tested against every wallet extension** -- see
-  [`frontend/README.md`](./frontend/README.md)'s own "Honest limitations" for the frontend's
-  specific caveats (no indexer, admin-only calls have no UI, etc).
+  this ecosystem, but is untested end-to-end against a live injected wallet in this repository**
+  (no frontend is included in this submission at all -- see "Scope" above).
